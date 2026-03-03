@@ -1,0 +1,156 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
+
+paths = []
+final = None
+
+
+# 이미지 선택
+def select_image_files():
+    global paths
+    files = filedialog.askopenfilenames(
+        title="이미지 선택",
+        filetypes=[("이미지 파일", "*.jpg;*.png")]
+    )
+    if files:
+        paths = list(files)
+        lbl_status.config(text=f"선택된 이미지: {len(paths)}장")
+    else:
+        lbl_status.config(text="선택된 이미지 없음")
+
+
+def start_motion_trace():
+    global paths, final
+
+    if len(paths) < 2:
+        messagebox.showwarning("경고", "2장 이상 필요합니다.")
+        return
+
+    cnt = len(paths)
+
+    # 1. 이미지 읽기
+    imgs = []
+    for p in paths:
+        img = cv2.imread(p)
+
+        if img is None:
+            print(f"이미지 로드 실패: {p}")
+            continue
+        imgs.append(img)
+
+    if not imgs:
+        messagebox.showerror("에러", "이미지를 불러올 수 없습니다.")
+        return
+
+    # 이미지 크기 통일
+    h, w, c = imgs[0].shape
+    imgs = [cv2.resize(im, (w, h)) for im in imgs]
+
+    # 2. 움직임 마스크 생성
+    masks = []
+    for i in range(cnt):
+        if i == 0:
+            masks.append(np.ones((h, w), dtype=np.uint8) * 255)
+            continue
+
+        # 차영상 계산
+        diff = cv2.absdiff(imgs[i - 1], imgs[i])
+
+        #흑백 변환
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+
+        #이진화
+        mask = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)[1]
+        masks.append(mask)
+
+    # 3. 합성
+
+    # 결과물 배경
+    result = imgs[0].copy().astype(np.float32)
+
+    for i in range(cnt):
+        if i == 0: continue  # 첫 프레임은 배경이므로 패스
+
+        frame = imgs[i].astype(np.float32)
+
+        # 모션 블러 적용
+        frame = cv2.GaussianBlur(frame, (21, 21), 0)
+
+        # 마스크 생성
+        mask = masks[i] / 255.0
+        mask3 = cv2.merge([mask, mask, mask])
+
+        # 순서 비율 (0.0 ~ 1.0)
+        ratio = i / (cnt - 1)
+
+        # 투명도 변화율
+        alpha = (1.0 - ratio) ** 3
+
+        # 최소값 설정
+        if alpha < 0.05: alpha = 0.05
+
+        # 투명도 값 적용
+        weighted_mask = mask3 * alpha
+
+        # 합성
+        result = result * (1 - weighted_mask) + frame * weighted_mask
+
+    # 최종 변환
+    final = cv2.convertScaleAbs(result)
+
+    update_preview(final)
+    messagebox.showinfo("성공", "생성 완료")
+
+
+# 이미지 미리 보기
+def update_preview(cv_img):
+    img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+    img_pil = Image.fromarray(img_rgb)
+    img_pil.thumbnail((800, 550))
+    img_tk = ImageTk.PhotoImage(img_pil)
+    lbl_preview.config(image=img_tk)
+    lbl_preview.image = img_tk
+
+
+# 이미지 저장
+def save_result_file():
+    global final
+    if final is None:
+        messagebox.showerror("에러", "생성 하세요.")
+        return
+    save_path = filedialog.asksaveasfilename(defaultextension=".jpg", filetypes=[("JPG", "*.jpg"), ("PNG", "*.png")])
+    if save_path:
+        cv2.imwrite(save_path, final)
+        messagebox.showinfo("저장", "저장했습니다.")
+
+
+# UI 설정
+root = tk.Tk()
+root.title("움직임 잔상 콜라주 프로그램")
+root.geometry("900x750")
+
+frame_top = tk.Frame(root, pady=15)
+frame_top.pack(side="top", fill="x")
+
+b1 = tk.Button(frame_top, text="1. 이미지 선택", command=select_image_files, width=15, height=2)
+b1.pack(side="left", padx=10)
+
+b2 = tk.Button(frame_top, text="2. 콜라주 생성", command=start_motion_trace, width=15, height=2, bg="#FF7F50")
+b2.pack(side="left", padx=10)
+
+b3 = tk.Button(frame_top, text="3. 콜라주 저장", command=save_result_file, width=15, height=2)
+b3.pack(side="left", padx=10)
+
+lbl_status = tk.Label(root, text="이미지를 선택하세요.")
+lbl_status.pack(pady=5)
+
+frame_view = tk.Frame(root, bg="#111", padx=10, pady=10)
+frame_view.pack(fill="both", expand=True, padx=20, pady=10)
+
+lbl_preview = tk.Label(frame_view, text="미리보기", bg="#111", fg="#eee")
+lbl_preview.pack(fill="both", expand=True)
+
+root.mainloop()
